@@ -58,6 +58,14 @@ from .leakage import (
     detect_curvature_anomaly,
     detect_text_token_shortcut,
 )
+from .calibration import (
+    CalibrationProfile,
+    CalibratedResult,
+    NullDistribution,
+    ConfidenceLevel,
+    ConscienceLevel,
+    calibrated_evaluation,
+)
 
 __all__ = [
     # Metrics
@@ -85,4 +93,11 @@ __all__ = [
     "detect_velocity_anomaly",
     "detect_curvature_anomaly",
     "detect_text_token_shortcut",
+    # Calibration
+    "CalibrationProfile",
+    "CalibratedResult",
+    "NullDistribution",
+    "ConfidenceLevel",
+    "ConscienceLevel",
+    "calibrated_evaluation",
 ]
