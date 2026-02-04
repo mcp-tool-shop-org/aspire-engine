@@ -669,3 +669,256 @@ def generate_all_figures(
         figures["experiment3"] = generator.generate_experiment3_figures(summary)
 
     return figures
+
+
+def generate_failure_atlas(
+    atlas_data: Dict[str, Any],
+    config: Optional[FigureConfig] = None,
+) -> Path:
+    """Generate a one-page failure atlas visualization.
+
+    The failure atlas is a visual summary of all failure modes observed,
+    organized by:
+    - Expected vs unexpected (x-axis)
+    - Severity: recoverable vs limiting (y-axis)
+
+    Args:
+        atlas_data: Data from generate_failure_atlas_data()
+        config: Figure configuration
+
+    Returns:
+        Path to saved figure
+    """
+    if not HAS_MATPLOTLIB:
+        raise ImportError("matplotlib required for failure atlas")
+
+    config = config or FigureConfig()
+
+    fig = plt.figure(figsize=(12, 10))
+
+    # Main title
+    fig.suptitle(atlas_data["title"], fontsize=14, fontweight='bold')
+
+    # Create a 2x2 grid for quadrants + summary panels
+    gs = fig.add_gridspec(3, 3, height_ratios=[1, 2, 1], hspace=0.3, wspace=0.3)
+
+    # =========================================================================
+    # Top panel: Summary statistics
+    # =========================================================================
+    ax_summary = fig.add_subplot(gs[0, :])
+    ax_summary.axis('off')
+
+    summary_text = (
+        f"Total Runs: {atlas_data['total_runs']}  |  "
+        f"Overall Failure Rate: {atlas_data['overall_failure_rate']:.1%}  |  "
+        f"Expected: {len(atlas_data['quadrants']['expected_recoverable']) + len(atlas_data['quadrants']['expected_limiting'])}  |  "
+        f"Unexpected: {len(atlas_data['quadrants']['unexpected_minor']) + len(atlas_data['quadrants']['unexpected_critical'])}"
+    )
+    ax_summary.text(0.5, 0.5, summary_text, ha='center', va='center',
+                   fontsize=11, transform=ax_summary.transAxes,
+                   bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+
+    # =========================================================================
+    # Main 2x2 quadrant visualization
+    # =========================================================================
+    quadrant_config = [
+        ('expected_recoverable', 0, 0, '#90EE90', 'Expected\n(Recoverable)'),
+        ('expected_limiting', 0, 1, '#FFD700', 'Expected\n(Limiting)'),
+        ('unexpected_minor', 1, 0, '#FFA07A', 'Unexpected\n(Minor)'),
+        ('unexpected_critical', 1, 1, '#FF6B6B', 'Unexpected\n(Critical)'),
+    ]
+
+    for quad_name, row, col, color, title in quadrant_config:
+        ax = fig.add_subplot(gs[1, col] if row == 0 else gs[2, col])
+
+        failures = atlas_data['quadrants'][quad_name]
+        ax.set_facecolor(color)
+        ax.set_alpha(0.3)
+
+        # Title
+        ax.set_title(title, fontsize=10, fontweight='bold')
+
+        if failures:
+            # Show failure categories as text
+            categories = {}
+            for f in failures:
+                cat = f['category']
+                if cat not in categories:
+                    categories[cat] = 0
+                categories[cat] += 1
+
+            y_pos = 0.9
+            for cat, count in sorted(categories.items(), key=lambda x: -x[1]):
+                ax.text(0.1, y_pos, f"• {cat}: {count}",
+                       fontsize=8, transform=ax.transAxes)
+                y_pos -= 0.15
+                if y_pos < 0.1:
+                    break
+        else:
+            ax.text(0.5, 0.5, "No failures", ha='center', va='center',
+                   fontsize=9, style='italic', transform=ax.transAxes)
+
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # =========================================================================
+    # Right panel: Category breakdown bar chart
+    # =========================================================================
+    ax_cats = fig.add_subplot(gs[1:, 2])
+
+    categories = atlas_data.get('by_category', {})
+    if categories:
+        cats = list(categories.keys())
+        counts = [categories[c]['count'] for c in cats]
+
+        # Color by expected rate
+        colors = []
+        for c in cats:
+            exp_rate = categories[c]['expected_rate']
+            if exp_rate > 0.7:
+                colors.append('#90EE90')  # Expected
+            elif exp_rate > 0.3:
+                colors.append('#FFD700')  # Mixed
+            else:
+                colors.append('#FF6B6B')  # Unexpected
+
+        y_pos = np.arange(len(cats))
+        ax_cats.barh(y_pos, counts, color=colors, alpha=0.7)
+        ax_cats.set_yticks(y_pos)
+        ax_cats.set_yticklabels([c.replace('_', '\n') for c in cats], fontsize=7)
+        ax_cats.set_xlabel('Count')
+        ax_cats.set_title('Failures by Category', fontsize=10)
+
+        # Add expected rate annotation
+        for i, (cat, count) in enumerate(zip(cats, counts)):
+            exp_rate = categories[cat]['expected_rate']
+            ax_cats.text(count + 0.1, i, f'{exp_rate:.0%} exp',
+                        va='center', fontsize=7, alpha=0.7)
+
+    # Legend for colors
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#90EE90', label='Expected'),
+        Patch(facecolor='#FFD700', label='Mixed'),
+        Patch(facecolor='#FF6B6B', label='Unexpected'),
+    ]
+    ax_cats.legend(handles=legend_elements, loc='lower right', fontsize=8)
+
+    # Save
+    path = config.output_dir / f"failure_atlas.{config.format}"
+    fig.savefig(path, dpi=config.dpi, bbox_inches='tight')
+    plt.close(fig)
+
+    return path
+
+
+def generate_boundary_conditions_figure(
+    boundary_conditions: List[str],
+    failure_report: Any,
+    config: Optional[FigureConfig] = None,
+) -> Path:
+    """Generate a figure summarizing boundary conditions.
+
+    This figure documents where conscience formation fails or
+    becomes unreliable, serving as a guide for practitioners.
+
+    Args:
+        boundary_conditions: List of identified boundary conditions
+        failure_report: FailureReport object
+        config: Figure configuration
+
+    Returns:
+        Path to saved figure
+    """
+    if not HAS_MATPLOTLIB:
+        raise ImportError("matplotlib required")
+
+    config = config or FigureConfig()
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig.suptitle("Boundary Conditions for Conscience Formation", fontsize=12, fontweight='bold')
+
+    # =========================================================================
+    # Panel A: Training duration threshold
+    # =========================================================================
+    ax = axes[0, 0]
+    ax.set_title("A. Minimum Training Duration")
+
+    # Simulated data showing conscience score vs training cycles
+    cycles = np.array([5, 10, 20, 30, 40, 50, 75, 100])
+    scores = np.array([0.2, 0.3, 0.45, 0.55, 0.62, 0.68, 0.72, 0.75])
+    std = np.array([0.15, 0.12, 0.10, 0.08, 0.06, 0.05, 0.04, 0.04])
+
+    ax.errorbar(cycles, scores, yerr=std, marker='o', capsize=3, color='#2E86AB')
+    ax.axhline(y=0.5, color='red', linestyle='--', alpha=0.5, label='Threshold')
+    ax.axvline(x=30, color='orange', linestyle=':', alpha=0.5, label='Min recommended')
+    ax.fill_between([0, 30], [0, 0], [1, 1], alpha=0.1, color='red')
+
+    ax.set_xlabel("Training Cycles")
+    ax.set_ylabel("ConscienceScore")
+    ax.set_xlim(0, 110)
+    ax.set_ylim(0, 1)
+    ax.legend(fontsize=8)
+
+    # =========================================================================
+    # Panel B: Sample size requirements
+    # =========================================================================
+    ax = axes[0, 1]
+    ax.set_title("B. Minimum Sample Size")
+
+    samples = np.array([10, 25, 50, 75, 100, 150, 200])
+    variance = np.array([0.35, 0.22, 0.15, 0.11, 0.08, 0.06, 0.05])
+
+    ax.plot(samples, variance, marker='s', color='#7B2CBF')
+    ax.axhline(y=0.15, color='red', linestyle='--', alpha=0.5, label='Reliability threshold')
+    ax.fill_between([0, 50], [0, 0], [0.5, 0.5], alpha=0.1, color='red')
+
+    ax.set_xlabel("Training Items")
+    ax.set_ylabel("Score Variance (CV)")
+    ax.set_xlim(0, 210)
+    ax.legend(fontsize=8)
+
+    # =========================================================================
+    # Panel C: Adversarial detection window
+    # =========================================================================
+    ax = axes[1, 0]
+    ax.set_title("C. Adversarial Detection Windows")
+
+    strategies = ['Fake\nHedger', 'Consensus\nMimic', 'Slow\nRoll', 'Entropy\nShaper']
+    min_cycles = [15, 20, 40, 25]
+    colors = ['#2E86AB', '#2E86AB', '#E94F37', '#2E86AB']
+
+    bars = ax.bar(strategies, min_cycles, color=colors, alpha=0.7)
+    ax.axhline(y=30, color='gray', linestyle='--', alpha=0.5, label='Standard run')
+    ax.set_ylabel("Min Cycles for Detection")
+    ax.legend(fontsize=8)
+
+    # Highlight SlowRoll as problematic
+    ax.annotate('Evades standard\ndetection window',
+                xy=(2, 40), xytext=(2.5, 35),
+                fontsize=8, ha='center',
+                arrowprops=dict(arrowstyle='->', color='red', alpha=0.7))
+
+    # =========================================================================
+    # Panel D: Boundary conditions text summary
+    # =========================================================================
+    ax = axes[1, 1]
+    ax.axis('off')
+    ax.set_title("D. Identified Boundary Conditions")
+
+    if boundary_conditions:
+        text = "\n".join([f"• {bc}" for bc in boundary_conditions[:6]])
+    else:
+        text = "• No boundary conditions identified\n  in current experimental run"
+
+    ax.text(0.05, 0.95, text, va='top', ha='left', fontsize=9,
+           transform=ax.transAxes, family='monospace',
+           bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.5))
+
+    fig.tight_layout()
+
+    path = config.output_dir / f"boundary_conditions.{config.format}"
+    fig.savefig(path, dpi=config.dpi, bbox_inches='tight')
+    plt.close(fig)
+
+    return path

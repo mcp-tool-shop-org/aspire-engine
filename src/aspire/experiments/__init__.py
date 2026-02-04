@@ -42,6 +42,15 @@ from .experiment3_adversarial import (
 from .figures import (
     FigureGenerator,
     generate_all_figures,
+    generate_failure_atlas,
+    generate_boundary_conditions_figure,
+)
+from .failure_tracking import (
+    FailureTracker,
+    FailureReport,
+    FailureCase,
+    FailureCategory,
+    generate_failure_atlas_data,
 )
 
 __all__ = [
@@ -62,4 +71,12 @@ __all__ = [
     # Figures
     "FigureGenerator",
     "generate_all_figures",
+    "generate_failure_atlas",
+    "generate_boundary_conditions_figure",
+    # Failure tracking
+    "FailureTracker",
+    "FailureReport",
+    "FailureCase",
+    "FailureCategory",
+    "generate_failure_atlas_data",
 ]
