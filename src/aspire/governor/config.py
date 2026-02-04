@@ -36,14 +36,43 @@ class GovernorConfig:
     retry_delay_caution_ms: int = 200    # Delay between retries (caution)
     retry_delay_soft_stop_ms: int = 500  # Delay between retries (soft stop)
 
-    # Inference cost estimation
+    # Inference cost estimation (static fallback)
     tokens_per_small_inference: int = 1   # <100 output tokens
     tokens_per_medium_inference: int = 2  # 100-500 output tokens
     tokens_per_large_inference: int = 4   # >500 output tokens
 
+    # Dynamic lease sizing (used when student provides estimates)
+    use_dynamic_lease_sizing: bool = True
+    min_lease_tokens: int = 1
+    max_lease_tokens: int = 8
+
     # Failure classification thresholds
     oom_memory_ratio_threshold: float = 0.88  # Classify as OOM if memory was this high
     oom_peak_gb_threshold: float = 12.0       # Classify as OOM if peak exceeded this
+
+    def estimate_tokens_for_inference(
+        self,
+        prompt_tokens: int = 100,
+        max_new_tokens: int = 256,
+        model_memory_gb: float = 0.0,
+    ) -> int:
+        """Estimate tokens needed for an inference operation.
+
+        If model_memory_gb is provided (from student.estimate_memory_gb),
+        uses dynamic sizing. Otherwise falls back to static tiers.
+        """
+        if self.use_dynamic_lease_sizing and model_memory_gb > 0:
+            # Dynamic: based on actual memory estimate
+            tokens_needed = int(model_memory_gb / self.gb_per_token) + 1
+            return max(self.min_lease_tokens, min(self.max_lease_tokens, tokens_needed))
+
+        # Static fallback: tier by output token count
+        if max_new_tokens < 100:
+            return self.tokens_per_small_inference
+        elif max_new_tokens < 500:
+            return self.tokens_per_medium_inference
+        else:
+            return self.tokens_per_large_inference
 
     @classmethod
     def for_rtx_5080(cls) -> "GovernorConfig":
