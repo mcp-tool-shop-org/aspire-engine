@@ -1,0 +1,20 @@
+{
+  "pairwise_correlations": {
+    "rigor_vs_nuance": 0.8805583492432978,
+    "rigor_vs_holistic": 0.9011506444118508,
+    "rigor_vs_pragmatist": 0.9352631613370684,
+    "rigor_vs_theorist": 0.8277710428282978,
+    "nuance_vs_holistic": 0.8639798022209599,
+    "nuance_vs_pragmatist": 0.882825121743399,
+    "nuance_vs_theorist": 0.8581301041106455,
+    "holistic_vs_pragmatist": 0.8859274056293207,
+    "holistic_vs_theorist": 0.8030773853248794,
+    "pragmatist_vs_theorist": 0.8358632651230657
+  },
+  "mean_correlation": 0.8674546281972786,
+  "first_factor_variance": 0.9049158664129222,
+  "second_factor_variance": 0.03337965173643706,
+  "effective_dimensionality": 1.2175115323529209,
+  "n_professors": 5,
+  "transfer_viable": true
+}
