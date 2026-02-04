@@ -15,6 +15,7 @@ from ..core import (
 from ..student import StudentModel, TrainingSignal
 from ..professors import ProfessorEnsemble
 from ..critic import Critic, CriticPrediction, MisalignmentSignal
+from ..governor import TokenPool, GovernorConfig, ThrottleLevel
 
 
 @dataclass
@@ -28,6 +29,8 @@ class CycleResult:
     tokens_earned: TokenVector
     cycle_time_ms: float
     teaching_moment: TeachingMoment
+    governor_wait_ms: float = 0.0      # Time spent waiting for governor
+    governor_throttled: bool = False   # Was this cycle throttled?
 
 
 @dataclass
@@ -38,6 +41,11 @@ class TrainingMetrics:
     token_ledger: TokenLedger = field(default_factory=TokenLedger)
     critic_surprise_history: List[float] = field(default_factory=list)
     avg_cycle_time_ms: float = 0.0
+
+    # Governor metrics
+    throttled_cycles: int = 0
+    total_governor_wait_ms: float = 0.0
+    oom_retries: int = 0
 
     @property
     def accuracy(self) -> float:
@@ -51,6 +59,12 @@ class TrainingMetrics:
             return 0.0
         return sum(self.critic_surprise_history) / len(self.critic_surprise_history)
 
+    @property
+    def throttle_rate(self) -> float:
+        if self.total_cycles == 0:
+            return 0.0
+        return self.throttled_cycles / self.total_cycles
+
 
 class AspireEngine:
     """The ASPIRE training engine.
@@ -58,6 +72,7 @@ class AspireEngine:
     Orchestrates the test→critique→reveal→update loop.
 
     Each cycle:
+    0. Acquire governor token (wait if throttled)
     1. Present test item to student
     2. Student generates reasoning + answer
     3. Critic predicts token outcomes (gut feeling)
@@ -65,7 +80,8 @@ class AspireEngine:
     5. Compute misalignment (surprise)
     6. Reveal gold answer + rationale (teaching moment)
     7. Update student and critic
-    8. Move to next test
+    8. Release governor token (with OOM classification)
+    9. Move to next test
 
     Target: 5-20 seconds per cycle
     """
@@ -75,6 +91,8 @@ class AspireEngine:
         student: StudentModel,
         professors: Optional[ProfessorEnsemble] = None,
         critic: Optional[Critic] = None,
+        governor: Optional[TokenPool] = None,
+        governor_config: Optional[GovernorConfig] = None,
         on_cycle_complete: Optional[Callable[[CycleResult], None]] = None,
     ):
         from ..critic import HeuristicCritic
@@ -84,12 +102,44 @@ class AspireEngine:
         self.critic = critic or HeuristicCritic()
         self.on_cycle_complete = on_cycle_complete
 
+        # Governor for resource protection
+        if governor is not None:
+            self.governor = governor
+        elif governor_config is not None:
+            self.governor = TokenPool(governor_config)
+        else:
+            # No governor - run unprotected (for testing/mock)
+            self.governor = None
+
         self.metrics = TrainingMetrics()
         self._running = False
 
     def run_cycle(self, item: TrainingItem) -> CycleResult:
         """Run a single training cycle."""
         cycle_start = time.perf_counter()
+        governor_wait_ms = 0.0
+        governor_throttled = False
+        lease_id = None
+
+        # 0. Acquire governor token (if enabled)
+        if self.governor is not None:
+            acquire_result = self.governor.try_acquire(
+                operation=f"inference:{item.id}",
+                requested_tokens=1,
+            )
+            governor_wait_ms = acquire_result.wait_time_ms
+            governor_throttled = acquire_result.throttle_level != ThrottleLevel.NORMAL
+
+            if not acquire_result.success:
+                # Governor refused - create a failed result
+                # This shouldn't happen often if timeouts are reasonable
+                raise RuntimeError(
+                    f"Governor refused inference: {acquire_result.reason}"
+                )
+
+            lease_id = acquire_result.lease_id
+
+        inference_start = time.perf_counter()
 
         # 1. Student generates response
         response = self.student.generate(item)
@@ -151,6 +201,20 @@ class AspireEngine:
             evaluation.disagreement_score,
         )
 
+        # 9. Release governor token
+        if self.governor is not None and lease_id is not None:
+            inference_time_ms = (time.perf_counter() - inference_start) * 1000
+            release_result = self.governor.release(
+                lease_id=lease_id,
+                peak_memory_mb=0,  # TODO: track actual peak
+                exit_code=0,  # Success
+                duration_ms=inference_time_ms,
+            )
+
+            # Track OOM retries if classified
+            if release_result.should_retry:
+                self.metrics.oom_retries += 1
+
         cycle_time = (time.perf_counter() - cycle_start) * 1000
 
         # Update metrics
@@ -164,6 +228,11 @@ class AspireEngine:
             cycle_time
         ) / self.metrics.total_cycles
 
+        # Governor metrics
+        if governor_throttled:
+            self.metrics.throttled_cycles += 1
+        self.metrics.total_governor_wait_ms += governor_wait_ms
+
         result = CycleResult(
             item=item,
             response=response,
@@ -173,6 +242,8 @@ class AspireEngine:
             tokens_earned=tokens_earned,
             cycle_time_ms=cycle_time,
             teaching_moment=teaching_moment,
+            governor_wait_ms=governor_wait_ms,
+            governor_throttled=governor_throttled,
         )
 
         if self.on_cycle_complete:
